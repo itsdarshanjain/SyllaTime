@@ -19,16 +19,22 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'SyllaTime Backend is running!' });
 });
 
-// Database connection
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
-  })
-  .catch((err) => {
-    console.error('MongoDB connection error:', err);
-  });
+// Database connection. Vercel reuses warm function instances, so avoid opening
+// a new connection every time the function handler is invoked.
+if (/^mongodb(?:\+srv)?:\/\//.test(process.env.MONGODB_URI || '')) {
+  mongoose.connect(process.env.MONGODB_URI)
+    .then(() => {
+      console.log('Connected to MongoDB');
+    })
+    .catch((err) => {
+      console.error('MongoDB connection error:', err);
+    });
+}
 
-// Server start
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
