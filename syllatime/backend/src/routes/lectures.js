@@ -1,12 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const { fetchTranscript, formatTranscriptForLLM, extractVideoId } = require('../services/transcriptService');
-const { alignTopicsWithGemini } = require('../services/geminiAlignment');
+const { 
+  fetchTranscript, 
+  formatTranscriptForLLM, 
+  extractVideoId,
+  getVideoDetails 
+} = require('../services/transcriptService');
+const { 
+  alignTopicsWithGemini, 
+  alignTopicsWithChapters, 
+  alignTopicsWithVideoContext 
+} = require('../services/geminiAlignment');
 const LectureGroup = require('../models/LectureGroup');
 
 // POST /api/lectures
 // Accepts { syllabusTopics: [String], videoUrls: [String] }
-// Returns saved LectureGroup with DP-aligned topicMatches
+// Returns saved LectureGroup with aligned topicMatches
 router.post('/', async (req, res) => {
   try {
     const { syllabusTopics, videoUrls } = req.body;
@@ -23,48 +32,79 @@ router.post('/', async (req, res) => {
 
     const videoDocs = [];
     const allTopicMatches = {}; 
+    const failedVideos = [];
     
     // Initialize topic tracking
     syllabusTopics.forEach(topic => {
       allTopicMatches[topic] = [];
     });
 
-    for (const url of videoUrls) {
+    for (const rawUrl of videoUrls) {
+      const url = typeof rawUrl === 'string' ? rawUrl.trim() : '';
+      if (!url) continue;
+
       const videoId = extractVideoId(url);
+      if (!videoId) {
+        failedVideos.push({ url, error: 'Invalid YouTube URL format' });
+        continue;
+      }
+
       try {
-        const rawTranscript = await fetchTranscript(url);
-        const formattedTranscript = formatTranscriptForLLM(rawTranscript);
+        // 1. Fetch video metadata (verifies video exists on YouTube)
+        const videoMeta = await getVideoDetails(videoId);
         
+        let alignments = [];
+
+        // 2. Try fetching raw transcript
+        const rawTranscript = await fetchTranscript(url);
+
+        if (rawTranscript && rawTranscript.length > 0) {
+          console.log(`[Lectures] Using direct transcript for ${videoId} (${rawTranscript.length} segments)`);
+          const formattedTranscript = formatTranscriptForLLM(rawTranscript);
+          alignments = await alignTopicsWithGemini(syllabusTopics, formattedTranscript);
+        } else if (videoMeta.chapters && videoMeta.chapters.length > 0) {
+          // 3. Fallback: Use video description chapters
+          console.log(`[Lectures] Transcript unavailable; using ${videoMeta.chapters.length} description chapters for ${videoId}`);
+          alignments = await alignTopicsWithChapters(syllabusTopics, videoMeta.chapters, videoMeta);
+        } else {
+          // 4. Fallback: AI curriculum alignment across video duration
+          console.log(`[Lectures] Aligning syllabus across video duration for ${videoId}`);
+          alignments = await alignTopicsWithVideoContext(syllabusTopics, videoMeta);
+        }
+
         videoDocs.push({
           videoId,
-          title: `Video ${videoId}`, // Ideally fetch real title from YouTube API, mock for now
+          title: videoMeta.title || `Video ${videoId}`,
           url
         });
 
-        // Run Gemini LLM Alignment
-        const alignments = await alignTopicsWithGemini(syllabusTopics, formattedTranscript);
-
-        // Merge results
-        alignments.forEach(align => {
-          if (allTopicMatches[align.topic]) {
-            allTopicMatches[align.topic].push({
-              videoId,
-              startTime: align.startTime,
-              endTime: align.endTime,
-              confidenceScore: align.confidenceScore,
-              context: align.context
-            });
-          }
-        });
+        // Merge alignment results
+        if (Array.isArray(alignments)) {
+          alignments.forEach(align => {
+            if (allTopicMatches[align.topic]) {
+              allTopicMatches[align.topic].push({
+                videoId,
+                startTime: Math.round(align.startTime || 0),
+                endTime: Math.round(align.endTime || (align.startTime ? align.startTime + 600 : 600)),
+                confidenceScore: align.confidenceScore || 0.85,
+                context: align.context || `Covers ${align.topic}`
+              });
+            }
+          });
+        }
 
       } catch (error) {
         console.error(`Error processing video ${url}:`, error.message);
-        // Continue with other videos even if one fails
+        failedVideos.push({ url, videoId, error: error.message });
       }
     }
 
     if (videoDocs.length === 0) {
-      return res.status(400).json({ error: 'Failed to fetch transcripts for all provided videos. Please ensure the videos have captions enabled.' });
+      const errorMsg = failedVideos.map(f => `${f.url}: ${f.error}`).join('; ');
+      return res.status(400).json({ 
+        error: `Could not process video(s). ${errorMsg || 'Please ensure the YouTube URLs are valid and accessible.'}`,
+        details: failedVideos
+      });
     }
 
     // Format topicMatches for Mongoose schema
@@ -73,7 +113,7 @@ router.post('/', async (req, res) => {
       matches: allTopicMatches[topic] || []
     }));
 
-    // Save to DB (Optional fallback)
+    // Save to DB (Optional fallback if DB not connected)
     try {
       const lectureGroup = new LectureGroup({
         syllabusTopics,
@@ -84,7 +124,6 @@ router.post('/', async (req, res) => {
       res.json(lectureGroup);
     } catch (dbError) {
       console.warn('Could not save to MongoDB. Returning generated results anyway.', dbError.message);
-      // Still return the generated structured data so the frontend works!
       res.json({
         syllabusTopics,
         videos: videoDocs,
@@ -94,7 +133,7 @@ router.post('/', async (req, res) => {
 
   } catch (error) {
     console.error('Error processing lectures:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: error.message || 'Internal server error' });
   }
 });
 

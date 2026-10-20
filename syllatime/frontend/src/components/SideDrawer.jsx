@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { X, BookOpen, Layers, CheckSquare, Brain, Printer } from 'lucide-react';
+import { X, BookOpen, Layers, CheckSquare, Printer } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { generateAIContent, updateMastery } from '../api';
+import { generateAIContent } from '../api';
 
 const MASTERY_NEXT = {
   'Not Started':    'Studied',
@@ -34,6 +34,7 @@ function SideDrawer({ isOpen, onClose, topicData, topicIndex, lectureGroupId, on
     if (isOpen && topicData) {
       loadContent();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, topicData]);
 
   const currentMastery = topicData?.masteryStatus || 'Not Started';
@@ -60,7 +61,7 @@ function SideDrawer({ isOpen, onClose, topicData, topicIndex, lectureGroupId, on
     } else if (anyWrong && (currentMastery === 'Studied' || currentMastery === 'Not Started')) {
       nextStatus = 'Needs Revision';
     } else if (allCorrect && currentMastery === 'Needs Revision') {
-      nextStatus = 'Reviewed';
+      nextStatus = 'Reviewed'; // Though this is redundant because if allCorrect is true, it is handled in the first if block
     }
 
     if (nextStatus !== currentMastery) {

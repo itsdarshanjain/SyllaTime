@@ -14,9 +14,17 @@ app.use(express.json());
 // Routes
 app.use('/api/lectures', lecturesRoute);
 
-// Basic health check
+// Health check with environment diagnostics
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'SyllaTime Backend is running!' });
+  res.json({ 
+    status: 'ok', 
+    message: 'SyllaTime Backend is running!',
+    diagnostics: {
+      hasGeminiApiKey: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 5),
+      hasMongoUri: Boolean(process.env.MONGODB_URI && /^mongodb(?:\+srv)?:\/\//.test(process.env.MONGODB_URI)),
+      dbConnected: mongoose.connection.readyState === 1
+    }
+  });
 });
 
 // Database connection. Vercel reuses warm function instances, so avoid opening

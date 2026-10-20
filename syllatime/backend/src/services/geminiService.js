@@ -1,10 +1,17 @@
+require('dotenv').config();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ 
-  model: "gemini-3.6-flash", 
-  generationConfig: { responseMimeType: "application/json" } 
-});
+function getModel() {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is missing from environment variables. Please add it to your Vercel project settings.');
+  }
+  const genAI = new GoogleGenerativeAI(apiKey);
+  return genAI.getGenerativeModel({ 
+    model: "gemini-3.6-flash", 
+    generationConfig: { responseMimeType: "application/json" } 
+  });
+}
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -72,6 +79,7 @@ async function generateTopicContent(topic, context, maxRetries = 3) {
       }
 
       console.log(`[Gemini] Generating content for topic: "${topic}" (attempt ${attempt + 1})`);
+      const model = getModel();
       const result = await model.generateContent(prompt);
       rawText = result.response.text();
 

@@ -117,9 +117,13 @@ function App() {
     e.preventDefault();
     setError('');
     const syllabusTopics = topicsText.split('\n').map(t => t.trim()).filter(Boolean);
-    const videoUrls = urls.filter(u => u.trim());
+    const videoUrls = urls
+      .map(u => u.trim().replace(/[<>()[\]'"]+/g, ''))
+      .filter(Boolean);
+
     if (!syllabusTopics.length || !videoUrls.length) {
-      setError('Please provide at least one topic and one valid YouTube URL.'); return;
+      setError('Please provide at least one topic and one valid YouTube URL.'); 
+      return;
     }
     setLoading(true);
     try {
@@ -128,7 +132,13 @@ function App() {
       setTopics(data.topicMatches || []);
       if (data.videos?.length) setActiveVideoId(data.videos[0].videoId);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'An error occurred.');
+      const serverError = err.response?.data?.error;
+      const details = err.response?.data?.details;
+      if (details && Array.isArray(details) && details.length > 0) {
+        setError(details.map(d => `${d.videoId ? `[${d.videoId}] ` : ''}${d.error}`).join(' | '));
+      } else {
+        setError(serverError || err.message || 'An error occurred while generating the timeline.');
+      }
     } finally {
       setLoading(false);
     }
