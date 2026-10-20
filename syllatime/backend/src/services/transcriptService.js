@@ -42,6 +42,16 @@ function parseChapters(text, totalDuration = 0) {
   return chapters;
 }
 
+function extractDurationFromTitle(title) {
+  if (!title) return 0;
+  const hrMatch = title.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|hr)\b/i);
+  if (hrMatch) return Math.round(parseFloat(hrMatch[1]) * 3600);
+  const minMatch = title.match(/(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|min)\b/i);
+  if (minMatch) return Math.round(parseFloat(minMatch[1]) * 60);
+  if (/one\s*shot/i.test(title)) return 18000; // ~5 hours for full-syllabus semester exam videos
+  return 0;
+}
+
 // Fetch YouTube video details via official oEmbed and page HTML
 async function getVideoDetails(videoId) {
   let title = `Video ${videoId}`;
@@ -67,11 +77,12 @@ async function getVideoDetails(videoId) {
     console.warn(`[oEmbed] Fetch notice for ${videoId}:`, err.message);
   }
 
-  // 2. Fetch page HTML to extract description chapters & approx duration
+  // 2. Fetch page HTML with consent cookie to extract description chapters & approx duration
   try {
     const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Cookie': 'SOCS=CAESEwgDEgk2OTQ0MzA2NTQaAmVuIAEaBgiA_LyaBg; PREF=hl=en',
         'Accept-Language': 'en-US,en;q=0.9'
       },
       signal: AbortSignal.timeout(8000)
@@ -94,9 +105,9 @@ async function getVideoDetails(videoId) {
     console.warn(`[HTML Page] Parse notice for ${videoId}:`, err.message);
   }
 
-  // Default duration to 1 hour if not detected
+  // Fallback duration based on title (e.g. "4 Hours", "6 hrs", "one shot")
   if (!duration || duration <= 0) {
-    duration = 3600;
+    duration = extractDurationFromTitle(title) || 14400;
   }
 
   return { videoId, title, author, chapters, duration };

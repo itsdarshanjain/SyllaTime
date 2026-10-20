@@ -29,6 +29,19 @@ const loadSavedState = (key, defaultVal) => {
   }
 };
 
+// Helper for formatting seconds into HH:MM:SS or MM:SS
+const formatSeconds = (sec) => {
+  if (typeof sec !== 'number' || isNaN(sec)) return '0:00';
+  const total = Math.max(0, Math.floor(sec));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${m}:${String(s).padStart(2, '0')}`;
+};
+
 function App() {
   // Session initialization
   const initialSessions = loadSavedState('syllatime_sessions', []);
@@ -358,18 +371,49 @@ function App() {
                               <p className="text-sm text-gray-400 italic mt-2">No matches found in provided videos.</p>
                             ) : (
                               <div className="space-y-2 mt-4">
-                                {t.matches.map((match, mIdx) => (
-                                  <div key={mIdx} className="flex items-center justify-between bg-gray-50 px-4 py-3 rounded-xl border border-gray-100">
-                                    <span className="text-sm font-semibold text-indigo-600">
-                                      {Math.floor(match.startTime / 60)}:{String(Math.floor(match.startTime % 60)).padStart(2, '0')} –
-                                      {Math.floor(match.endTime / 60)}:{String(Math.floor(match.endTime % 60)).padStart(2, '0')}
-                                    </span>
-                                    <button onClick={() => playTopic(match.videoId, match.startTime)}
-                                      className="flex items-center gap-1.5 bg-indigo-100 hover:bg-indigo-600 hover:text-white text-indigo-700 text-xs px-4 py-1.5 rounded-lg font-bold transition-colors shadow-sm">
-                                      <Play className="w-3.5 h-3.5" /> Seek
-                                    </button>
-                                  </div>
-                                ))}
+                                {t.matches.map((match, mIdx) => {
+                                  const video = lectureData?.videos?.find(v => v.videoId === match.videoId);
+                                  const videoIdx = lectureData?.videos?.findIndex(v => v.videoId === match.videoId);
+                                  const videoNum = (videoIdx !== undefined && videoIdx !== -1) ? videoIdx + 1 : mIdx + 1;
+                                  const isPlaying = activeVideoId === match.videoId;
+
+                                  return (
+                                    <div key={mIdx} className={`p-3 rounded-xl border transition-all ${isPlaying ? 'bg-indigo-50/80 border-indigo-200 ring-1 ring-indigo-200' : 'bg-gray-50/80 border-gray-100 hover:border-indigo-100'}`}>
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0 flex-1">
+                                          <div className="flex items-center gap-2 mb-1">
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-100 text-indigo-700">
+                                              Video {videoNum}
+                                            </span>
+                                            <span className="text-xs font-semibold text-gray-700 truncate max-w-[280px]" title={video?.title}>
+                                              {video?.title || `Video ${match.videoId}`}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs font-bold text-indigo-700 font-mono bg-white px-2 py-0.5 rounded border border-indigo-100">
+                                              {formatSeconds(match.startTime)} – {formatSeconds(match.endTime)}
+                                            </span>
+                                            {match.confidenceScore && (
+                                              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                                {Math.round(match.confidenceScore * 100)}% match
+                                              </span>
+                                            )}
+                                          </div>
+                                          {match.context && (
+                                            <p className="text-xs text-gray-500 mt-1 line-clamp-2 leading-relaxed">
+                                              {match.context}
+                                            </p>
+                                          )}
+                                        </div>
+                                        <button 
+                                          onClick={() => playTopic(match.videoId, match.startTime)}
+                                          className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs transition-all shadow-sm active:scale-95 ${isPlaying ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-600 hover:text-white'}`}>
+                                          <Play className="w-3.5 h-3.5 fill-current" /> Seek
+                                        </button>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
