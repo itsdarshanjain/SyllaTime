@@ -62,69 +62,35 @@ Transcript:
 ${context}
 `;
 
-async function generateTopicContent(topic, context, maxRetries = 3) {
+const { generateWithFallback } = require('./geminiAlignment');
+
+async function generateTopicContent(topic, context) {
   // Trim context to avoid hitting token limits
   const trimmedContext = context ? context.slice(0, 2500) : `Topic: ${topic}`;
   const prompt = COMBINED_PROMPT(topic, trimmedContext);
-  let lastError;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    let rawText = '';
-    try {
-      if (attempt > 0) {
-        // Exponential backoff: 2s, 4s, 8s — respect the rate limit window
-        const delay = Math.pow(2, attempt) * 2000;
-        console.log(`[Gemini] Overloaded. Attempt ${attempt + 1}/${maxRetries + 1} — waiting ${delay / 1000}s...`);
-        await sleep(delay);
-      }
+  console.log(`[Gemini] Generating study content for topic: "${topic}"`);
+  const rawText = await generateWithFallback(prompt, true);
 
-      console.log(`[Gemini] Generating content for topic: "${topic}" (attempt ${attempt + 1})`);
-      const model = getModel();
-      const result = await model.generateContent(prompt);
-      rawText = result.response.text();
-
-      // Strip markdown code fences if present
-      let cleanText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
-      
-      // Extract the outermost JSON object
-      const jsonMatch = cleanText.match(/(\{[\s\S]*\})/);
-      if (jsonMatch) {
-        cleanText = jsonMatch[0];
-      }
-
-      const parsed = JSON.parse(cleanText);
-
-      // Basic validation
-      if (!parsed.examNote || !parsed.flashcards || !parsed.quiz) {
-        throw new Error('Response missing required fields (examNote, flashcards, or quiz)');
-      }
-
-      console.log(`[Gemini] Successfully generated content for: "${topic}"`);
-      return {
-        examNote: parsed.examNote,
-        flashcards: parsed.flashcards,
-        quiz: parsed.quiz,
-        difficulty: parsed.difficulty || 'Medium'
-      };
-
-    } catch (err) {
-      lastError = err;
-      const isRateLimit = err.message?.includes('overloaded') || 
-                          err.message?.includes('503') || 
-                          err.message?.includes('429') ||
-                          err.message?.includes('quota');
-      
-      console.warn(`[Gemini] Attempt ${attempt + 1} failed: ${err.message}`);
-      if (rawText) console.warn(`[Gemini] Raw response snippet:`, rawText.slice(0, 300));
-
-      if (!isRateLimit && !(err instanceof SyntaxError)) {
-        // Non-retryable error (e.g. bad API key, invalid model)
-        throw err;
-      }
-    }
+  // Strip markdown code fences if present
+  let cleanText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const jsonMatch = cleanText.match(/(\{[\s\S]*\})/);
+  if (jsonMatch) {
+    cleanText = jsonMatch[0];
   }
 
-  throw new Error(`Gemini API failed after ${maxRetries + 1} attempts. ${lastError?.message || ''}`);
+  const parsed = JSON.parse(cleanText);
+
+  if (!parsed.examNote || !parsed.flashcards || !parsed.quiz) {
+    throw new Error('Response missing required fields (examNote, flashcards, or quiz)');
+  }
+
+  return {
+    examNote: parsed.examNote,
+    flashcards: parsed.flashcards,
+    quiz: parsed.quiz,
+    difficulty: parsed.difficulty || 'Medium'
+  };
 }
 
 module.exports = { generateTopicContent };

@@ -1,19 +1,40 @@
 require('dotenv').config();
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 
-function getModel() {
+// Candidate models in priority order: start with fast, reliable flash models
+const CANDIDATE_MODELS = [
+  'gemini-3.5-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-3.8-flash',
+  'gemini-3.6-flash'
+];
+
+async function generateWithFallback(prompt, isJson = true) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is missing from environment variables. Please add it to your Vercel project settings.');
   }
   const genAI = new GoogleGenerativeAI(apiKey);
-  return genAI.getGenerativeModel({ 
-    model: "gemini-3.6-flash",
-    generationConfig: { responseMimeType: "application/json" } 
-  });
-}
+  let lastError;
 
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  for (const modelName of CANDIDATE_MODELS) {
+    try {
+      console.log(`[Gemini] Calling model ${modelName}...`);
+      const model = genAI.getGenerativeModel({ 
+        model: modelName,
+        ...(isJson ? { generationConfig: { responseMimeType: "application/json" } } : {})
+      });
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      console.log(`[Gemini] Model ${modelName} succeeded.`);
+      return text;
+    } catch (err) {
+      console.warn(`[Gemini] Model ${modelName} failed (${err.message}). Trying next candidate...`);
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
 
 function safeJsonParse(rawText) {
   let cleanText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
@@ -52,43 +73,14 @@ Transcript:
 ${transcript}
 `;
 
-async function alignTopicsWithGemini(topics, formattedTranscript, maxRetries = 2) {
+async function alignTopicsWithGemini(topics, formattedTranscript) {
   const prompt = ALIGNMENT_PROMPT(topics, formattedTranscript);
-  let lastError;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 0) {
-        const delay = Math.pow(2, attempt) * 2000;
-        console.log(`[Gemini Alignment] Retry ${attempt + 1}/${maxRetries + 1} — waiting ${delay / 1000}s...`);
-        await sleep(delay);
-      }
-
-      console.log(`[Gemini Alignment] Aligning ${topics.length} topics via transcript (attempt ${attempt + 1})`);
-      const model = getModel();
-      const result = await model.generateContent(prompt);
-      const parsed = safeJsonParse(result.response.text());
-      console.log(`[Gemini Alignment] Successfully aligned topics via transcript.`);
-      return parsed;
-
-    } catch (err) {
-      lastError = err;
-      console.warn(`[Gemini Alignment] Attempt ${attempt + 1} failed: ${err.message}`);
-      const isRateLimit = err.message?.includes('overloaded') || 
-                          err.message?.includes('503') || 
-                          err.message?.includes('429') ||
-                          err.message?.includes('quota');
-      if (!isRateLimit && !(err instanceof SyntaxError)) {
-        throw err;
-      }
-    }
-  }
-
-  throw new Error(`Gemini Alignment failed after ${maxRetries + 1} attempts. ${lastError?.message || ''}`);
+  const rawText = await generateWithFallback(prompt, true);
+  return safeJsonParse(rawText);
 }
 
 // Chapter-based alignment when chapters exist in description
-async function alignTopicsWithChapters(topics, chapters, videoMeta, maxRetries = 2) {
+async function alignTopicsWithChapters(topics, chapters, videoMeta) {
   const prompt = `
 You are an expert curriculum aligner. Given a list of syllabus topics and chapter segments from a video lecture titled "${videoMeta.title}", map each syllabus topic to the most relevant segment in the video.
 
@@ -109,26 +101,12 @@ Ensure startTime and endTime are numbers matching the chapter timestamps.
 Only output the JSON array, no markdown.
 `;
 
-  let lastError;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 0) await sleep(2000);
-      console.log(`[Gemini Chapters] Aligning ${topics.length} topics with ${chapters.length} chapters`);
-      const model = getModel();
-      const result = await model.generateContent(prompt);
-      const parsed = safeJsonParse(result.response.text());
-      console.log(`[Gemini Chapters] Successfully aligned topics with chapters.`);
-      return parsed;
-    } catch (err) {
-      lastError = err;
-      console.warn(`[Gemini Chapters] Attempt ${attempt + 1} failed: ${err.message}`);
-    }
-  }
-  throw new Error(`Chapter alignment failed: ${lastError?.message || ''}`);
+  const rawText = await generateWithFallback(prompt, true);
+  return safeJsonParse(rawText);
 }
 
 // AI curriculum alignment across video duration when no transcript or chapters exist
-async function alignTopicsWithVideoContext(topics, videoMeta, maxRetries = 2) {
+async function alignTopicsWithVideoContext(topics, videoMeta) {
   const durationSec = videoMeta.duration || 3600;
   const prompt = `
 You are an expert curriculum aligner. Given a list of syllabus topics and a video lecture of duration ${durationSec} seconds titled "${videoMeta.title}", distribute and map each syllabus topic chronologically across the lecture video based on standard university software engineering syllabus progression.
@@ -147,26 +125,13 @@ Ensure the topics are ordered logically across the video duration from 0 to ${du
 Only output the JSON array, no markdown.
 `;
 
-  let lastError;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try {
-      if (attempt > 0) await sleep(2000);
-      console.log(`[Gemini Context] Aligning ${topics.length} topics across ${durationSec}s video`);
-      const model = getModel();
-      const result = await model.generateContent(prompt);
-      const parsed = safeJsonParse(result.response.text());
-      console.log(`[Gemini Context] Successfully aligned topics across video timeline.`);
-      return parsed;
-    } catch (err) {
-      lastError = err;
-      console.warn(`[Gemini Context] Attempt ${attempt + 1} failed: ${err.message}`);
-    }
-  }
-  throw new Error(`Context alignment failed: ${lastError?.message || ''}`);
+  const rawText = await generateWithFallback(prompt, true);
+  return safeJsonParse(rawText);
 }
 
 module.exports = {
   alignTopicsWithGemini,
   alignTopicsWithChapters,
-  alignTopicsWithVideoContext
+  alignTopicsWithVideoContext,
+  generateWithFallback
 };
