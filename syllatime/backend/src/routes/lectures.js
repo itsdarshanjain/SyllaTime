@@ -15,7 +15,7 @@ const LectureGroup = require('../models/LectureGroup');
 
 // POST /api/lectures
 // Accepts { syllabusTopics: [String], videoUrls: [String] }
-// Returns saved LectureGroup with aligned topicMatches
+// Returns LectureGroup with the SINGLE BEST seek time per topic across all videos
 router.post('/', async (req, res) => {
   try {
     const { syllabusTopics, videoUrls } = req.body;
@@ -31,12 +31,13 @@ router.post('/', async (req, res) => {
     }
 
     const videoDocs = [];
-    const allTopicMatches = {}; 
     const failedVideos = [];
     
-    // Initialize topic tracking
+    // Collect ALL alignment candidates from ALL videos
+    // Key: topic name -> array of { videoId, startTime, endTime, confidenceScore, context, videoTitle }
+    const candidatesByTopic = {};
     syllabusTopics.forEach(topic => {
-      allTopicMatches[topic] = [];
+      candidatesByTopic[topic] = [];
     });
 
     for (const rawUrl of videoUrls) {
@@ -78,15 +79,16 @@ router.post('/', async (req, res) => {
           url
         });
 
-        // Merge alignment results
+        // Collect all alignment candidates with video info
         if (Array.isArray(alignments)) {
           alignments.forEach(align => {
-            if (allTopicMatches[align.topic]) {
-              allTopicMatches[align.topic].push({
+            if (candidatesByTopic[align.topic]) {
+              candidatesByTopic[align.topic].push({
                 videoId,
+                videoTitle: videoMeta.title || `Video ${videoId}`,
                 startTime: Math.round(align.startTime || 0),
                 endTime: Math.round(align.endTime || (align.startTime ? align.startTime + 600 : 600)),
-                confidenceScore: align.confidenceScore || 0.85,
+                confidenceScore: align.confidenceScore || 0.75,
                 context: align.context || `Covers ${align.topic}`
               });
             }
@@ -107,11 +109,41 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // Format topicMatches for Mongoose schema
-    const formattedTopicMatches = syllabusTopics.map(topic => ({
-      topic,
-      matches: allTopicMatches[topic] || []
-    }));
+    // ──────────────────────────────────────────────────────────
+    // CORE LOGIC: Pick the SINGLE BEST match per topic
+    // from all candidates across all videos
+    // ──────────────────────────────────────────────────────────
+    const formattedTopicMatches = syllabusTopics.map(topic => {
+      const candidates = candidatesByTopic[topic] || [];
+      
+      if (candidates.length === 0) {
+        return { topic, bestMatch: null, matches: [] };
+      }
+
+      // Sort by confidence score descending, pick the best
+      candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
+      const best = candidates[0];
+
+      return {
+        topic,
+        bestMatch: {
+          videoId: best.videoId,
+          videoTitle: best.videoTitle,
+          startTime: best.startTime,
+          endTime: best.endTime,
+          confidenceScore: best.confidenceScore,
+          context: best.context
+        },
+        // Keep all matches as backup for reference
+        matches: candidates.map(c => ({
+          videoId: c.videoId,
+          startTime: c.startTime,
+          endTime: c.endTime,
+          confidenceScore: c.confidenceScore,
+          context: c.context
+        }))
+      };
+    });
 
     // Save to DB (Optional fallback if DB not connected)
     try {
@@ -176,9 +208,6 @@ router.post('/:id/topics/:topicIndex/generate', async (req, res) => {
     }
 
     // Not in cache, we need to generate!
-    // Since we need context, let's accept context in the request body for simplicity,
-    // or fetch it. To be self-contained, frontend can send the context or we can fetch.
-    // Let's expect { context: "text..." } from the frontend body to avoid slow refetching.
     const { context, topicName } = req.body;
     
     if (!context || !topicName) {

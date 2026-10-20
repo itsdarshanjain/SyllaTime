@@ -62,7 +62,7 @@ async function getVideoDetails(videoId) {
   // 1. Check video existence and fetch title via YouTube oEmbed
   try {
     const oembedRes = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`, {
-      signal: AbortSignal.timeout(6000)
+      signal: AbortSignal.timeout(8000)
     });
     if (oembedRes.status === 404) {
       throw new Error(`YouTube video "${videoId}" was not found (404). Please verify that the YouTube URL is correct and characters (such as uppercase I vs lowercase l) match.`);
@@ -85,7 +85,7 @@ async function getVideoDetails(videoId) {
         'Cookie': 'SOCS=CAESEwgDEgk2OTQ0MzA2NTQaAmVuIAEaBgiA_LyaBg; PREF=hl=en',
         'Accept-Language': 'en-US,en;q=0.9'
       },
-      signal: AbortSignal.timeout(8000)
+      signal: AbortSignal.timeout(10000)
     });
     if (pageRes.ok) {
       const html = await pageRes.text();
@@ -113,21 +113,39 @@ async function getVideoDetails(videoId) {
   return { videoId, title, author, chapters, duration };
 }
 
-// Fetch transcript with graceful fallback
+// Fetch transcript with multiple retry strategies for reliability
 async function fetchTranscript(videoUrl) {
   const videoId = extractVideoId(videoUrl);
   if (!videoId) {
     throw new Error(`Invalid YouTube URL: ${videoUrl}`);
   }
 
+  // Strategy 1: Direct fetch via youtube-transcript library
   try {
     const transcript = await YoutubeTranscript.fetchTranscript(videoId);
     if (transcript && transcript.length > 0) {
+      console.log(`[Transcript] Direct fetch succeeded for ${videoId}: ${transcript.length} segments`);
       return transcript;
     }
   } catch (error) {
-    console.warn(`[Transcript] Direct transcript fetch failed for ${videoId}:`, error.message);
+    console.warn(`[Transcript] Direct fetch failed for ${videoId}:`, error.message);
   }
+
+  // Strategy 2: Try with language hints (en, hi, auto)
+  const langCodes = ['en', 'hi', 'en-IN'];
+  for (const lang of langCodes) {
+    try {
+      const transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang });
+      if (transcript && transcript.length > 0) {
+        console.log(`[Transcript] Fetch with lang=${lang} succeeded for ${videoId}: ${transcript.length} segments`);
+        return transcript;
+      }
+    } catch {
+      // Silently continue to next language
+    }
+  }
+
+  console.warn(`[Transcript] All transcript strategies exhausted for ${videoId}. Will use fallback alignment.`);
   return null;
 }
 

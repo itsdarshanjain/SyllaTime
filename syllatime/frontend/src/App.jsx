@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import YouTube from 'react-youtube';
 import { processLectures, updateMastery } from './api';
-import { Play, CheckCircle2, Clock, Sparkles, BarChart2, BookOpen, Circle, RotateCcw, CheckCircle, FolderOpen, Plus } from 'lucide-react';
+import { Play, CheckCircle2, Clock, Sparkles, BarChart2, BookOpen, Circle, RotateCcw, CheckCircle, FolderOpen, Plus, Trophy } from 'lucide-react';
 import SideDrawer from './components/SideDrawer';
 import Dashboard from './components/Dashboard';
 import HistoryDrawer from './components/HistoryDrawer';
@@ -143,7 +143,13 @@ function App() {
       const data = await processLectures(syllabusTopics, videoUrls);
       setLectureData(data);
       setTopics(data.topicMatches || []);
-      if (data.videos?.length) setActiveVideoId(data.videos[0].videoId);
+      // Auto-set the first video that has a best match
+      const firstBestVideo = data.topicMatches?.find(t => t.bestMatch)?.bestMatch?.videoId;
+      if (firstBestVideo) {
+        setActiveVideoId(firstBestVideo);
+      } else if (data.videos?.length) {
+        setActiveVideoId(data.videos[0].videoId);
+      }
     } catch (err) {
       const serverError = err.response?.data?.error;
       const details = err.response?.data?.details;
@@ -188,6 +194,7 @@ function App() {
   const totalTopics = topics.length;
   const masteredCount = topics.filter(t => t.masteryStatus === 'Reviewed').length;
   const progressPct = totalTopics > 0 ? Math.round((masteredCount / totalTopics) * 100) : 0;
+  const matchedCount = topics.filter(t => t.bestMatch).length;
 
   return (
     <div className="min-h-screen bg-transparent text-gray-900 pb-12">
@@ -239,7 +246,7 @@ function App() {
               </div>
               <div>
                 <h3 className="font-bold text-gray-900">Overall Progress</h3>
-                <p className="text-xs text-gray-500">{masteredCount} of {totalTopics} topics fully mastered</p>
+                <p className="text-xs text-gray-500">{masteredCount} of {totalTopics} topics fully mastered · {matchedCount} matched from {lectureData.videos?.length || 0} video{(lectureData.videos?.length || 0) !== 1 ? 's' : ''}</p>
               </div>
             </div>
             <div className="text-right">
@@ -271,11 +278,12 @@ function App() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Lecture Videos <span className="text-gray-400 font-normal">(YouTube URLs)</span></label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Lecture Videos <span className="text-gray-400 font-normal">(YouTube URLs — up to 3)</span></label>
+                  <p className="text-xs text-indigo-500 mb-2 font-medium">🏆 Best seek time is auto-picked from all videos for each topic</p>
                   {urls.map((url, i) => (
                     <input key={i} type="text"
                       className="w-full border border-gray-200/60 bg-white/50 backdrop-blur-sm rounded-xl p-2.5 text-sm mb-3 focus:ring-2 focus:ring-indigo-500 outline-none transition-all focus:bg-white"
-                      placeholder={i === 0 ? "Primary YouTube URL" : "Optional — add another lecture covering the same topics"} value={url}
+                      placeholder={i === 0 ? "Primary YouTube URL" : "Optional — another lecture covering same topics"} value={url}
                       onChange={e => handleUrlChange(i, e.target.value)}
                     />
                   ))}
@@ -318,14 +326,20 @@ function App() {
 
               {lectureData && (
                 <div className="glass-card p-6 rounded-2xl">
-                  <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-900 font-outfit">
+                  <h2 className="text-xl font-bold mb-2 flex items-center gap-2 text-gray-900 font-outfit">
                     <Clock className="w-5 h-5 text-indigo-500" /> Interactive Timeline
                   </h2>
+                  <p className="text-xs text-indigo-500 mb-6 font-medium flex items-center gap-1.5">
+                    <Trophy className="w-3.5 h-3.5" /> Showing the best seek time for each topic across {lectureData.videos?.length || 0} video{(lectureData.videos?.length || 0) !== 1 ? 's' : ''}
+                  </p>
                   <div className="space-y-5">
                     {topics.map((t, index) => {
                       const status = t.masteryStatus || 'Not Started';
                       const MasIcon = MASTERY_ICON[status];
                       const masStyle = MASTERY_STYLE[status];
+                      const best = t.bestMatch;
+                      const video = best ? lectureData?.videos?.find(v => v.videoId === best.videoId) : null;
+
                       return (
                         <div key={index} className="flex gap-4 group">
                           <div className="flex flex-col items-center pt-2">
@@ -338,9 +352,9 @@ function App() {
                             <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
                               <div className="flex items-center gap-3 min-w-0">
                                 <h3 className="font-bold text-gray-900 text-lg truncate font-outfit">{t.topic}</h3>
-                                {t.matches.length > 0 && (
+                                {best && (
                                   <span className="shrink-0 bg-green-100 text-green-700 text-xs px-2.5 py-1 rounded-full font-semibold flex items-center gap-1.5">
-                                    <CheckCircle2 className="w-3.5 h-3.5" /> Match Found
+                                    <Trophy className="w-3.5 h-3.5" /> Best Match
                                   </span>
                                 )}
                               </div>
@@ -359,7 +373,7 @@ function App() {
                                   <MasIcon className={`absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 pointer-events-none`} />
                                   <div className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none opacity-60 text-[10px]`}>▼</div>
                                 </div>
-                                {t.matches.length > 0 && (
+                                {best && (
                                   <button onClick={() => openDrawer(index)}
                                     className="flex items-center gap-1.5 bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white text-xs px-3.5 py-1.5 rounded-full font-bold shadow transition-all active:scale-95">
                                     <Sparkles className="w-3.5 h-3.5" /> AI Materials
@@ -367,53 +381,44 @@ function App() {
                                 )}
                               </div>
                             </div>
-                            {t.matches.length === 0 ? (
+                            {!best ? (
                               <p className="text-sm text-gray-400 italic mt-2">No matches found in provided videos.</p>
                             ) : (
-                              <div className="space-y-2 mt-4">
-                                {t.matches.map((match, mIdx) => {
-                                  const video = lectureData?.videos?.find(v => v.videoId === match.videoId);
-                                  const videoIdx = lectureData?.videos?.findIndex(v => v.videoId === match.videoId);
-                                  const videoNum = (videoIdx !== undefined && videoIdx !== -1) ? videoIdx + 1 : mIdx + 1;
-                                  const isPlaying = activeVideoId === match.videoId;
-
-                                  return (
-                                    <div key={mIdx} className={`p-3 rounded-xl border transition-all ${isPlaying ? 'bg-indigo-50/80 border-indigo-200 ring-1 ring-indigo-200' : 'bg-gray-50/80 border-gray-100 hover:border-indigo-100'}`}>
-                                      <div className="flex items-center justify-between gap-3">
-                                        <div className="min-w-0 flex-1">
-                                          <div className="flex items-center gap-2 mb-1">
-                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-100 text-indigo-700">
-                                              Video {videoNum}
-                                            </span>
-                                            <span className="text-xs font-semibold text-gray-700 truncate max-w-[280px]" title={video?.title}>
-                                              {video?.title || `Video ${match.videoId}`}
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            <span className="text-xs font-bold text-indigo-700 font-mono bg-white px-2 py-0.5 rounded border border-indigo-100">
-                                              {formatSeconds(match.startTime)} – {formatSeconds(match.endTime)}
-                                            </span>
-                                            {match.confidenceScore && (
-                                              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
-                                                {Math.round(match.confidenceScore * 100)}% match
-                                              </span>
-                                            )}
-                                          </div>
-                                          {match.context && (
-                                            <p className="text-xs text-gray-500 mt-1 line-clamp-2 leading-relaxed">
-                                              {match.context}
-                                            </p>
-                                          )}
-                                        </div>
-                                        <button 
-                                          onClick={() => playTopic(match.videoId, match.startTime)}
-                                          className={`shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs transition-all shadow-sm active:scale-95 ${isPlaying ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-600 hover:text-white'}`}>
-                                          <Play className="w-3.5 h-3.5 fill-current" /> Seek
-                                        </button>
+                              <div className="mt-4">
+                                <div className={`p-3 rounded-xl border transition-all ${activeVideoId === best.videoId ? 'bg-indigo-50/80 border-indigo-200 ring-1 ring-indigo-200' : 'bg-gray-50/80 border-gray-100 hover:border-indigo-100'}`}>
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2 mb-1">
+                                        <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-indigo-100 text-indigo-700">
+                                          🏆 Best
+                                        </span>
+                                        <span className="text-xs font-semibold text-gray-700 truncate max-w-[280px]" title={best.videoTitle || video?.title}>
+                                          {best.videoTitle || video?.title || `Video ${best.videoId}`}
+                                        </span>
                                       </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-indigo-700 font-mono bg-white px-2 py-0.5 rounded border border-indigo-100">
+                                          {formatSeconds(best.startTime)} – {formatSeconds(best.endTime)}
+                                        </span>
+                                        {best.confidenceScore && (
+                                          <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">
+                                            {Math.round(best.confidenceScore * 100)}% confidence
+                                          </span>
+                                        )}
+                                      </div>
+                                      {best.context && (
+                                        <p className="text-xs text-gray-500 mt-1 line-clamp-2 leading-relaxed">
+                                          {best.context}
+                                        </p>
+                                      )}
                                     </div>
-                                  );
-                                })}
+                                    <button 
+                                      onClick={() => playTopic(best.videoId, best.startTime)}
+                                      className={`shrink-0 flex items-center gap-1.5 px-4 py-2 rounded-lg font-bold text-xs transition-all shadow-sm active:scale-95 ${activeVideoId === best.videoId ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white text-indigo-700 border border-indigo-200 hover:bg-indigo-600 hover:text-white'}`}>
+                                      <Play className="w-3.5 h-3.5 fill-current" /> Seek
+                                    </button>
+                                  </div>
+                                </div>
                               </div>
                             )}
                           </div>

@@ -9,11 +9,20 @@ const LectureGroupSchema = new mongoose.Schema({
   }],
   topicMatches: [{
     topic: String,
+    bestMatch: {
+      videoId: String,
+      videoTitle: String,
+      startTime: Number,
+      endTime: Number,
+      confidenceScore: Number,
+      context: String
+    },
     matches: [{
       videoId: String,
       startTime: Number,
       endTime: Number,
-      confidenceScore: Number
+      confidenceScore: Number,
+      context: String
     }],
     examNote: Object,
     flashcards: [Object],

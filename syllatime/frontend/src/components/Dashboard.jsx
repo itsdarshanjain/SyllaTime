@@ -70,7 +70,13 @@ function DonutChart({ topics }) {
 
 function TimeBarChart({ topics }) {
   const data = useMemo(() => topics.map(t => {
-    const totalSeconds = t.matches.reduce((sum, m) => sum + (m.endTime - m.startTime), 0);
+    // Use bestMatch duration if available, otherwise sum from matches
+    let totalSeconds = 0;
+    if (t.bestMatch) {
+      totalSeconds = (t.bestMatch.endTime || 0) - (t.bestMatch.startTime || 0);
+    } else if (t.matches?.length > 0) {
+      totalSeconds = t.matches.reduce((sum, m) => sum + (m.endTime - m.startTime), 0);
+    }
     return {
       name: t.topic.length > 14 ? t.topic.slice(0, 14) + '…' : t.topic,
       fullName: t.topic,
@@ -100,7 +106,14 @@ function TimeBarChart({ topics }) {
 function TopicRow({ topic, index, lectureGroupId, onPYQChange, onMasteryChange }) {
   const cfg = STATUS_CONFIG[topic.masteryStatus || 'Not Started'];
   const Icon = cfg.icon;
-  const totalSeconds = topic.matches.reduce((sum, m) => sum + (m.endTime - m.startTime), 0);
+  
+  // Use bestMatch duration if available
+  let totalSeconds = 0;
+  if (topic.bestMatch) {
+    totalSeconds = (topic.bestMatch.endTime || 0) - (topic.bestMatch.startTime || 0);
+  } else if (topic.matches?.length > 0) {
+    totalSeconds = topic.matches.reduce((sum, m) => sum + (m.endTime - m.startTime), 0);
+  }
   const minutes = (totalSeconds / 60).toFixed(1);
   const pyq = topic.pyqCount || 0;
 
@@ -125,7 +138,10 @@ function TopicRow({ topic, index, lectureGroupId, onPYQChange, onMasteryChange }
       {/* Topic name */}
       <div className="flex-1 min-w-0">
         <p className="font-bold text-gray-900 text-sm truncate font-outfit">{topic.topic}</p>
-        <p className="text-xs text-indigo-500 font-medium mt-0.5">{minutes} min coverage</p>
+        <p className="text-xs text-indigo-500 font-medium mt-0.5">
+          {minutes} min coverage
+          {topic.bestMatch?.videoTitle && <span className="text-gray-400"> · {topic.bestMatch.videoTitle}</span>}
+        </p>
       </div>
 
       {/* Progress bar */}
@@ -211,7 +227,7 @@ function Dashboard({ topics, lectureGroupId, onPYQChange, onMasteryChange }) {
         </div>
         <div className="glass-card rounded-2xl p-6 hover:shadow-md transition-shadow">
           <h3 className="font-bold text-gray-800 mb-2 text-base font-outfit">Time Coverage per Topic</h3>
-          <p className="text-xs text-indigo-400 mb-4 font-medium">Estimated from transcript lengths · color = mastery</p>
+          <p className="text-xs text-indigo-400 mb-4 font-medium">Best match duration · color = mastery</p>
           <TimeBarChart topics={topics} />
         </div>
       </div>

@@ -60,8 +60,6 @@ function SideDrawer({ isOpen, onClose, topicData, topicIndex, lectureGroupId, on
       if (currentMastery !== 'Reviewed') nextStatus = 'Reviewed';
     } else if (anyWrong && (currentMastery === 'Studied' || currentMastery === 'Not Started')) {
       nextStatus = 'Needs Revision';
-    } else if (allCorrect && currentMastery === 'Needs Revision') {
-      nextStatus = 'Reviewed'; // Though this is redundant because if allCorrect is true, it is handled in the first if block
     }
 
     if (nextStatus !== currentMastery) {
@@ -94,8 +92,15 @@ function SideDrawer({ isOpen, onClose, topicData, topicIndex, lectureGroupId, on
     setQuizFinished(false);
 
     try {
-      const contextText = topicData.matches.map(m => m.context).filter(Boolean).join(' ');
-      const data = await generateAIContent(lectureGroupId || 'no-id', topicIndex, topicData.topic, contextText);
+      // Build context from bestMatch or matches
+      let contextText = '';
+      if (topicData.bestMatch?.context) {
+        contextText = topicData.bestMatch.context;
+      } else if (topicData.matches?.length > 0) {
+        contextText = topicData.matches.map(m => m.context).filter(Boolean).join(' ');
+      }
+      
+      const data = await generateAIContent(lectureGroupId || 'no-id', topicIndex, topicData.topic, contextText || topicData.topic);
       setContent({ ...data, topic: topicData.topic });
       setActiveCard(0);
       setIsFlipped(false);
