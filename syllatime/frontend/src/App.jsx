@@ -94,6 +94,7 @@ function App() {
   const [drawerTopicIndex, setDrawerTopicIndex] = useState(0);
 
   const playerRef = useRef(null);
+  const pendingSeekRef = useRef(null);
 
   const handleNewSession = () => {
     setTopicsText('New Topic\n');
@@ -163,15 +164,41 @@ function App() {
     }
   };
 
-  const onPlayerReady = (e) => { playerRef.current = e.target; };
+  const onPlayerReady = (e) => {
+    playerRef.current = e.target;
+    if (pendingSeekRef.current !== null) {
+      const targetTime = pendingSeekRef.current;
+      pendingSeekRef.current = null;
+      try {
+        e.target.seekTo(targetTime, true);
+        e.target.playVideo();
+      } catch (err) {
+        console.error('Seek error on player ready:', err);
+      }
+    }
+  };
 
   const playTopic = (videoId, startTime) => {
+    const validStart = Math.max(0, typeof startTime === 'number' ? startTime : 0);
     if (activeVideoId !== videoId) {
+      pendingSeekRef.current = validStart;
       setActiveVideoId(videoId);
-      setTimeout(() => { playerRef.current?.seekTo(startTime, true); playerRef.current?.playVideo(); }, 500);
+      setTimeout(() => {
+        if (playerRef.current && pendingSeekRef.current !== null) {
+          try {
+            playerRef.current.seekTo(validStart, true);
+            playerRef.current.playVideo();
+            pendingSeekRef.current = null;
+          } catch {}
+        }
+      }, 700);
     } else {
-      playerRef.current?.seekTo(startTime, true);
-      playerRef.current?.playVideo();
+      try {
+        playerRef.current?.seekTo(validStart, true);
+        playerRef.current?.playVideo();
+      } catch (err) {
+        console.error('Seek error:', err);
+      }
     }
   };
 

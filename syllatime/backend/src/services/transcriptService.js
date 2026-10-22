@@ -17,7 +17,8 @@ function extractVideoId(url) {
 // Parse timestamp chapters from video description text
 function parseChapters(text, totalDuration = 0) {
   if (!text) return [];
-  const lineRegex = /(?:^|\n)\s*(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\s+[-–—:]?\s*(.+?)(?=\r?\n|$)/g;
+  // Supports formats like: 01:23 Topic, [01:23] Topic, (01:23) Topic, 1:02:45 Topic, [1:02:45] Topic
+  const lineRegex = /(?:^|\n)\s*(?:[\(\[]\s*)?(?:(\d{1,2}):)?(\d{1,2}):(\d{2})(?:\s*[\)\]])?\s*[-–—:]?\s*(.+?)(?=\r?\n|$)/g;
   const chapters = [];
   let m;
   while ((m = lineRegex.exec(text)) !== null) {
@@ -25,8 +26,8 @@ function parseChapters(text, totalDuration = 0) {
     const minutes = parseInt(m[2], 10);
     const seconds = parseInt(m[3], 10);
     const totalSeconds = hours * 3600 + minutes * 60 + seconds;
-    const title = m[4].replace(/\\u[0-9a-fA-F]{4}/g, '').trim();
-    if (title) {
+    const title = m[4].replace(/\\u[0-9a-fA-F]{4}/g, '').replace(/^[•\-\*\s]+/, '').trim();
+    if (title && title.length > 1) {
       chapters.push({ title, startTime: totalSeconds });
     }
   }
@@ -56,6 +57,7 @@ function extractDurationFromTitle(title) {
 async function getVideoDetails(videoId) {
   let title = `Video ${videoId}`;
   let author = '';
+  let description = '';
   let chapters = [];
   let duration = 0;
 
@@ -98,6 +100,7 @@ async function getVideoDetails(videoId) {
       const descMatch = html.match(/"shortDescription":"(.*?)"/);
       if (descMatch) {
         const rawDesc = descMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"');
+        description = rawDesc;
         chapters = parseChapters(rawDesc, duration);
       }
     }
@@ -110,7 +113,7 @@ async function getVideoDetails(videoId) {
     duration = extractDurationFromTitle(title) || 14400;
   }
 
-  return { videoId, title, author, chapters, duration };
+  return { videoId, title, author, description, chapters, duration };
 }
 
 // Fetch transcript with multiple retry strategies for reliability
@@ -194,27 +197,40 @@ function chunkTranscript(transcript, targetDurationSec = 45) {
   return chunks;
 }
 
-// Format the raw transcript array for LLM consumption efficiently
+// Format the raw transcript array for LLM consumption with fine-grained timestamps
+// Proportional windowing guarantees 100% video coverage from second 0 to the very end
 function formatTranscriptForLLM(transcript) {
-  if (!transcript || !Array.isArray(transcript)) return '';
-  const formatted = [];
-  let currentGroupText = '';
-  let groupStartTime = 0;
+  if (!transcript || !Array.isArray(transcript) || transcript.length === 0) return '';
+  
+  const lastOffset = transcript[transcript.length - 1]?.offset || 0;
+  const totalDuration = lastOffset / 1000;
+  
+  // Calculate window size so total output is ~420 lines covering the ENTIRE duration
+  // e.g. 1-hour video -> 10s windows; 4-hour video -> 34s windows; 6-hour video -> 50s windows
+  const targetLines = 420;
+  const windowSec = Math.max(8, Math.ceil(totalDuration / targetLines));
+
+  const lines = [];
+  let curWords = [];
+  let curStart = 0;
 
   for (let i = 0; i < transcript.length; i++) {
     const item = transcript[i];
-    if (i % 3 === 0) {
-      groupStartTime = Math.floor(item.offset / 1000);
-      currentGroupText = item.text;
-    } else {
-      currentGroupText += ' ' + item.text;
-    }
+    const sec = Math.floor((item.offset || 0) / 1000);
+    if (curWords.length === 0) curStart = sec;
 
-    if ((i + 1) % 3 === 0 || i === transcript.length - 1) {
-      formatted.push(`[${groupStartTime}s] ${currentGroupText.trim()}`);
+    const words = (item.text || '').split(/\s+/).filter(Boolean);
+    curWords.push(...words);
+
+    if (sec - curStart >= windowSec || i === transcript.length - 1) {
+      // In each window, keep up to 35 informative words
+      const textSample = curWords.slice(0, 35).join(' ');
+      lines.push(`[${curStart}s] ${textSample}`);
+      curWords = [];
     }
   }
-  return formatted.join('\n');
+
+  return lines.join('\n');
 }
 
 module.exports = {

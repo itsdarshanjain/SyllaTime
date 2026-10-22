@@ -13,6 +13,56 @@ const {
 } = require('../services/geminiAlignment');
 const LectureGroup = require('../models/LectureGroup');
 
+const MIN_CONFIDENCE_THRESHOLD = 0.65;
+
+// Topic normalization helper for reliable matching
+const normalizeTopic = (str) => {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .toLowerCase()
+    .replace(/^\s*(?:\d+[\.\)]|[-•*])\s*/, '')
+    .replace(/[^\w\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+const findMatchingSyllabusTopic = (returnedTopic, topics) => {
+  if (!returnedTopic) return null;
+  if (topics.includes(returnedTopic)) return returnedTopic;
+  const normReturned = normalizeTopic(returnedTopic);
+
+  // 1. Exact normalized match
+  for (const orig of topics) {
+    const normOrig = normalizeTopic(orig);
+    if (normReturned === normOrig) return orig;
+  }
+
+  // 2. Substring match
+  for (const orig of topics) {
+    const normOrig = normalizeTopic(orig);
+    if (normOrig.length > 3 && normReturned.length > 3) {
+      if (normReturned.includes(normOrig) || normOrig.includes(normReturned)) {
+        return orig;
+      }
+    }
+  }
+
+  // 3. Word overlap match (handles plurals, acronyms, and partial names)
+  const retWords = new Set(normReturned.split(' ').filter(w => w.length > 2));
+  let bestMatch = null;
+  let maxOverlap = 0;
+  for (const orig of topics) {
+    const origWords = normalizeTopic(orig).split(' ').filter(w => w.length > 2);
+    let overlap = 0;
+    origWords.forEach(w => { if (retWords.has(w)) overlap++; });
+    if (overlap > maxOverlap && overlap >= Math.ceil(origWords.length / 2)) {
+      maxOverlap = overlap;
+      bestMatch = orig;
+    }
+  }
+  return bestMatch;
+};
+
 // POST /api/lectures
 // Accepts { syllabusTopics: [String], videoUrls: [String] }
 // Returns LectureGroup with the SINGLE BEST seek time per topic across all videos
@@ -54,44 +104,92 @@ router.post('/', async (req, res) => {
         // 1. Fetch video metadata (verifies video exists on YouTube)
         const videoMeta = await getVideoDetails(videoId);
         
-        let alignments = [];
-
-        // 2. Try fetching raw transcript
-        const rawTranscript = await fetchTranscript(url);
-
-        if (rawTranscript && rawTranscript.length > 0) {
-          console.log(`[Lectures] Using direct transcript for ${videoId} (${rawTranscript.length} segments)`);
-          const formattedTranscript = formatTranscriptForLLM(rawTranscript);
-          alignments = await alignTopicsWithGemini(syllabusTopics, formattedTranscript);
-        } else if (videoMeta.chapters && videoMeta.chapters.length > 0) {
-          // 3. Fallback: Use video description chapters
-          console.log(`[Lectures] Transcript unavailable; using ${videoMeta.chapters.length} description chapters for ${videoId}`);
-          alignments = await alignTopicsWithChapters(syllabusTopics, videoMeta.chapters, videoMeta);
-        } else {
-          // 4. Fallback: AI curriculum alignment across video duration
-          console.log(`[Lectures] Aligning syllabus across video duration for ${videoId}`);
-          alignments = await alignTopicsWithVideoContext(syllabusTopics, videoMeta);
-        }
-
         videoDocs.push({
           videoId,
           title: videoMeta.title || `Video ${videoId}`,
           url
         });
 
+        let alignments = [];
+        let aligned = false;
+
+        // Strategy A: Direct Transcript with Gemini (HIGHEST ACCURACY)
+        // Scans the spoken transcript for exact minute/second markers for each topic across 100% video duration
+        try {
+          const rawTranscript = await fetchTranscript(url);
+          if (rawTranscript && rawTranscript.length > 0) {
+            console.log(`[Lectures] Using direct transcript for ${videoId} (${rawTranscript.length} segments, full duration)`);
+            const formattedTranscript = formatTranscriptForLLM(rawTranscript);
+            alignments = await alignTopicsWithGemini(syllabusTopics, formattedTranscript);
+            if (Array.isArray(alignments) && alignments.length > 0) {
+              aligned = true;
+              console.log(`[Lectures] Transcript aligned ${alignments.length} topics for ${videoId}`);
+            }
+          }
+        } catch (trErr) {
+          console.warn(`[Lectures] Transcript alignment failed for ${videoId} (${trErr.message}). Falling back to chapters/context.`);
+        }
+
+        // Strategy B: Fallback to video description chapters if transcript failed or was unavailable
+        if (!aligned && videoMeta.chapters && videoMeta.chapters.length >= 2) {
+          console.log(`[Lectures] Using ${videoMeta.chapters.length} author description chapters for ${videoId}`);
+          try {
+            alignments = await alignTopicsWithChapters(syllabusTopics, videoMeta.chapters, videoMeta);
+            if (Array.isArray(alignments) && alignments.length > 0) {
+              aligned = true;
+            }
+          } catch (chErr) {
+            console.warn(`[Lectures] Chapters alignment failed for ${videoId}:`, chErr.message);
+          }
+        }
+
+        // Strategy C: Final fallback to video metadata context (title, duration, description)
+        if (!aligned) {
+          console.log(`[Lectures] Aligning syllabus using video context for ${videoId}`);
+          try {
+            alignments = await alignTopicsWithVideoContext(syllabusTopics, videoMeta);
+            if (Array.isArray(alignments) && alignments.length > 0) {
+              aligned = true;
+            }
+          } catch (ctxErr) {
+            console.warn(`[Lectures] Video context alignment failed for ${videoId}:`, ctxErr.message);
+          }
+        }
+
         // Collect all alignment candidates with video info
         if (Array.isArray(alignments)) {
           alignments.forEach(align => {
-            if (candidatesByTopic[align.topic]) {
-              candidatesByTopic[align.topic].push({
-                videoId,
-                videoTitle: videoMeta.title || `Video ${videoId}`,
-                startTime: Math.round(align.startTime || 0),
-                endTime: Math.round(align.endTime || (align.startTime ? align.startTime + 600 : 600)),
-                confidenceScore: align.confidenceScore || 0.75,
-                context: align.context || `Covers ${align.topic}`
-              });
+            const matchedTopicKey = findMatchingSyllabusTopic(align.topic, syllabusTopics);
+            if (!matchedTopicKey) return;
+
+            const conf = typeof align.confidenceScore === 'number' ? align.confidenceScore : 0;
+            
+            // Discard low-confidence or non-matching candidates
+            if (conf < MIN_CONFIDENCE_THRESHOLD) {
+              console.log(`[Lectures] Discarding candidate for "${matchedTopicKey}" with confidence ${conf}`);
+              return;
             }
+
+            const startTime = Math.max(0, Math.round(align.startTime || 0));
+            let endTime = Math.round(align.endTime || (startTime + 600));
+            if (endTime <= startTime) {
+              endTime = startTime + 300;
+            }
+
+            // Filter out accidental placeholders at 00:00 indicating missing topic
+            const ctx = (align.context || '').toLowerCase();
+            if (startTime === 0 && endTime <= 60 && (ctx.includes('not discussed') || ctx.includes('not covered') || ctx.includes('not in the transcript'))) {
+              return;
+            }
+
+            candidatesByTopic[matchedTopicKey].push({
+              videoId,
+              videoTitle: videoMeta.title || `Video ${videoId}`,
+              startTime,
+              endTime,
+              confidenceScore: conf,
+              context: align.context || `Covers ${matchedTopicKey}`
+            });
           });
         }
 
@@ -111,18 +209,21 @@ router.post('/', async (req, res) => {
 
     // ──────────────────────────────────────────────────────────
     // CORE LOGIC: Pick the SINGLE BEST match per topic
-    // from all candidates across all videos
+    // from all candidates across all videos (confidence >= 0.65)
     // ──────────────────────────────────────────────────────────
     const formattedTopicMatches = syllabusTopics.map(topic => {
       const candidates = candidatesByTopic[topic] || [];
       
-      if (candidates.length === 0) {
+      // Only accept genuine matches above the confidence threshold
+      const validCandidates = candidates.filter(c => c.confidenceScore >= MIN_CONFIDENCE_THRESHOLD);
+
+      if (validCandidates.length === 0) {
         return { topic, bestMatch: null, matches: [] };
       }
 
       // Sort by confidence score descending, pick the best
-      candidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
-      const best = candidates[0];
+      validCandidates.sort((a, b) => b.confidenceScore - a.confidenceScore);
+      const best = validCandidates[0];
 
       return {
         topic,
@@ -134,9 +235,10 @@ router.post('/', async (req, res) => {
           confidenceScore: best.confidenceScore,
           context: best.context
         },
-        // Keep all matches as backup for reference
-        matches: candidates.map(c => ({
+        // Keep all valid matches as backup for reference
+        matches: validCandidates.map(c => ({
           videoId: c.videoId,
+          videoTitle: c.videoTitle,
           startTime: c.startTime,
           endTime: c.endTime,
           confidenceScore: c.confidenceScore,
@@ -162,7 +264,6 @@ router.post('/', async (req, res) => {
         topicMatches: formattedTopicMatches
       });
     }
-
   } catch (error) {
     console.error('Error processing lectures:', error);
     res.status(500).json({ error: error.message || 'Internal server error' });
